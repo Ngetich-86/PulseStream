@@ -1,0 +1,44 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/pulsestream-core",
+    "crates/pulsestream-api",
+    "crates/pulsestream-worker",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+repository = "https://github.com/Ngetich-86/PulseStream"
+publish = false
+
+[workspace.dependencies]
+pulsestream-core = { path = "crates/pulsestream-core" }
+
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.19"
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "signal"] }
+tower = { version = "0.5.3", default-features = false, features = ["util"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["ansi", "env-filter", "fmt", "std"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+# Local WSL disk footprint is constrained; CI/release profiles remain conventional.
+# Non-incremental builds and line-table-only debug info keep `target/` small while
+# still producing usable backtraces. Release uses Cargo's defaults on purpose:
+# performance tuning (LTO, codegen-units, panic strategy) must be benchmark-driven.
+[profile.dev]
+incremental = false
+debug = "line-tables-only"
+
+[profile.test]
+incremental = false
+debug = "line-tables-only"

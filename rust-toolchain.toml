@@ -1,0 +1,5 @@
+# Pinned to the stable toolchain verified on the M0 workstation (rustc 1.98.0).
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
