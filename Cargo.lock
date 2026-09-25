@@ -348,6 +348,7 @@ name = "pulsestream-worker"
 version = "0.1.0"
 dependencies = [
  "pulsestream-core",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
