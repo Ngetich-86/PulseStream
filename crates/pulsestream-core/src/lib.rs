@@ -1,10 +1,11 @@
 //! Foundational PulseStream concepts shared by the API and worker processes.
 //!
-//! This crate deliberately contains no HTTP, runtime, or database code. In M0 it
-//! owns service identity and environment-based configuration parsing; the event
-//! domain model arrives with the ingestion and persistence milestones.
+//! This crate deliberately contains no HTTP, runtime, or database code. It owns
+//! service identity, environment-based configuration parsing, and the validated
+//! event domain model.
 
 pub mod config;
+pub mod event;
 
 use std::fmt;
 

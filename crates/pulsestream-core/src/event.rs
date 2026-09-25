@@ -1,0 +1,204 @@
+//! The validated event domain model.
+//!
+//! HTTP request shapes live in `pulsestream-api`; they are converted into these
+//! types only after validation, so everything downstream of admission can rely
+//! on the invariants enforced here.
+
+use std::fmt;
+use std::time::SystemTime;
+
+use serde_json::Value;
+use thiserror::Error;
+use uuid::Uuid;
+
+/// Maximum length of [`EventSource`], in Unicode scalar values.
+pub const MAX_SOURCE_CHARS: usize = 100;
+/// Maximum length of [`EventType`], in Unicode scalar values.
+pub const MAX_EVENT_TYPE_CHARS: usize = 150;
+
+/// A reason an event was rejected. Messages are safe to return to clients.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ValidationError {
+    #[error("{field} must not be empty")]
+    Empty { field: &'static str },
+
+    #[error("{field} must be at most {max} characters")]
+    TooLong { field: &'static str, max: usize },
+
+    #[error("{field} must not contain control characters")]
+    ControlCharacter { field: &'static str },
+
+    #[error("payload must not be null")]
+    NullPayload,
+}
+
+/// Server-generated identity of an admitted event (UUID v4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EventId(Uuid);
+
+impl EventId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for EventId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for EventId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Validates a short identifier-like field. Control characters are rejected
+/// because these values are written to logs.
+fn validate_label(field: &'static str, value: &str, max: usize) -> Result<(), ValidationError> {
+    if value.trim().is_empty() {
+        return Err(ValidationError::Empty { field });
+    }
+    if value.chars().count() > max {
+        return Err(ValidationError::TooLong { field, max });
+    }
+    if value.chars().any(char::is_control) {
+        return Err(ValidationError::ControlCharacter { field });
+    }
+    Ok(())
+}
+
+/// The producer that emitted an event, e.g. `orders-api`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventSource(String);
+
+impl EventSource {
+    pub fn parse(value: impl Into<String>) -> Result<Self, ValidationError> {
+        let value = value.into();
+        validate_label("source", &value, MAX_SOURCE_CHARS)?;
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// The kind of event, e.g. `order.created`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventType(String);
+
+impl EventType {
+    pub fn parse(value: impl Into<String>) -> Result<Self, ValidationError> {
+        let value = value.into();
+        validate_label("event_type", &value, MAX_EVENT_TYPE_CHARS)?;
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// A validated event, assigned an identity at admission time.
+///
+/// `payload` is opaque to PulseStream and is never logged.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Event {
+    pub id: EventId,
+    pub source: EventSource,
+    pub event_type: EventType,
+    pub payload: Value,
+    /// Wall-clock (UTC-based) time at which the event was admitted.
+    pub accepted_at: SystemTime,
+}
+
+impl Event {
+    /// Validates raw fields and assigns a fresh [`EventId`].
+    pub fn new(
+        source: impl Into<String>,
+        event_type: impl Into<String>,
+        payload: Value,
+    ) -> Result<Self, ValidationError> {
+        let source = EventSource::parse(source)?;
+        let event_type = EventType::parse(event_type)?;
+        if payload.is_null() {
+            return Err(ValidationError::NullPayload);
+        }
+        Ok(Self {
+            id: EventId::new(),
+            source,
+            event_type,
+            payload,
+            accepted_at: SystemTime::now(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn accepts_valid_event_and_assigns_unique_ids() {
+        let a = Event::new("orders-api", "order.created", json!({"order_id": "1"})).unwrap();
+        let b = Event::new("orders-api", "order.created", json!({"order_id": "1"})).unwrap();
+        assert_eq!(a.source.as_str(), "orders-api");
+        assert_eq!(a.event_type.as_str(), "order.created");
+        assert_ne!(a.id, b.id);
+        assert_eq!(a.id.to_string().len(), 36);
+    }
+
+    #[test]
+    fn rejects_empty_or_whitespace_labels() {
+        assert_eq!(
+            Event::new("", "t", json!({})).unwrap_err(),
+            ValidationError::Empty { field: "source" }
+        );
+        assert_eq!(
+            Event::new("s", "   ", json!({})).unwrap_err(),
+            ValidationError::Empty {
+                field: "event_type"
+            }
+        );
+    }
+
+    #[test]
+    fn enforces_length_limits_in_characters() {
+        let at_limit = "é".repeat(MAX_SOURCE_CHARS); // multi-byte: counts chars, not bytes
+        assert!(EventSource::parse(at_limit).is_ok());
+        assert_eq!(
+            EventSource::parse("a".repeat(MAX_SOURCE_CHARS + 1)).unwrap_err(),
+            ValidationError::TooLong {
+                field: "source",
+                max: MAX_SOURCE_CHARS
+            }
+        );
+        assert!(EventType::parse("t".repeat(MAX_EVENT_TYPE_CHARS)).is_ok());
+        assert_eq!(
+            EventType::parse("t".repeat(MAX_EVENT_TYPE_CHARS + 1)).unwrap_err(),
+            ValidationError::TooLong {
+                field: "event_type",
+                max: MAX_EVENT_TYPE_CHARS
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_control_characters_and_null_payload() {
+        assert_eq!(
+            EventType::parse("order.created\nforged-log-line").unwrap_err(),
+            ValidationError::ControlCharacter {
+                field: "event_type"
+            }
+        );
+        assert_eq!(
+            Event::new("s", "t", Value::Null).unwrap_err(),
+            ValidationError::NullPayload
+        );
+        // Any non-null JSON value is an acceptable opaque payload.
+        assert!(Event::new("s", "t", json!("text")).is_ok());
+    }
+}
