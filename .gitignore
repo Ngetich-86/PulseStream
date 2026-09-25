@@ -1,0 +1,20 @@
+# Rust build output (Cargo.lock is intentionally committed for this workspace)
+/target
+**/*.rs.bk
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*~
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,32 @@
+# PulseStream local development infrastructure.
+#
+# LOCAL DEVELOPMENT ONLY. Credentials default to obvious placeholders and can be
+# overridden from `.env` (git-ignored; see `.env.example`). The published port
+# binds to 127.0.0.1 only.
+#
+# Stop with `docker compose down`. Do NOT add `-v` unless you intend to delete
+# the `pulsestream_postgres-data` volume and all local data in it.
+name: pulsestream
+
+services:
+  postgres:
+    image: postgres:18.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pulsestream}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pulsestream_local_dev_only}
+      POSTGRES_DB: ${POSTGRES_DB:-pulsestream}
+    ports:
+      - "127.0.0.1:${PULSESTREAM_POSTGRES_PORT:-55432}:5432"
+    volumes:
+      # PostgreSQL 18+ images keep versioned data under /var/lib/postgresql/<major>.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  postgres-data:
