@@ -325,7 +325,9 @@ name = "pulsestream-api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "futures-util",
  "pulsestream-core",
+ "pulsestream-worker",
  "serde",
  "serde_json",
  "tokio",
