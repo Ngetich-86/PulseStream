@@ -1,10 +1,10 @@
-//! PulseStream worker.
+//! PulseStream worker process.
 //!
-//! M0 scope: configuration, structured logging, and a clean process lifecycle.
-//! The worker performs no event processing yet; it idles (no polling, no busy
-//! loop) until asked to shut down. The bounded worker pool, retries, and
-//! recovery arrive in later milestones, as does draining in-flight work on
-//! shutdown.
+//! This binary has no event source yet. In M1 the bounded pipeline (see the
+//! `pipeline` module of this crate's library) runs inside the API process,
+//! because admission is in-memory. From M2 this process will consume durably
+//! accepted events from PostgreSQL. Until then it idles (no polling, no busy
+//! loop) until asked to shut down.
 
 mod shutdown;
 mod telemetry;
@@ -43,7 +43,7 @@ async fn main() -> ExitCode {
 
 /// Runs the worker until `shutdown` resolves.
 async fn run(shutdown: impl Future<Output = ()>) {
-    info!(service = %SERVICE, state = "idle", "ready; event processing not implemented in M0");
+    info!(service = %SERVICE, state = "idle", "ready; no event source until durable acceptance (M2)");
     shutdown.await;
     info!(service = %SERVICE, state = "stopping", "stopping");
 }

@@ -5,11 +5,23 @@
 
 use std::fmt;
 use std::net::SocketAddr;
+use std::ops::RangeInclusive;
+use std::time::Duration;
 
 use thiserror::Error;
 
 pub const API_BIND_VAR: &str = "PULSESTREAM_API_BIND";
 pub const DATABASE_URL_VAR: &str = "DATABASE_URL";
+pub const QUEUE_CAPACITY_VAR: &str = "PULSESTREAM_QUEUE_CAPACITY";
+pub const WORKER_CONCURRENCY_VAR: &str = "PULSESTREAM_WORKER_CONCURRENCY";
+pub const SHUTDOWN_TIMEOUT_MS_VAR: &str = "PULSESTREAM_SHUTDOWN_TIMEOUT_MS";
+
+pub const DEFAULT_QUEUE_CAPACITY: usize = 256;
+pub const QUEUE_CAPACITY_RANGE: RangeInclusive<u64> = 1..=65_536;
+pub const DEFAULT_WORKER_CONCURRENCY: usize = 4;
+pub const WORKER_CONCURRENCY_RANGE: RangeInclusive<u64> = 1..=64;
+pub const DEFAULT_SHUTDOWN_TIMEOUT_MS: u64 = 10_000;
+pub const SHUTDOWN_TIMEOUT_MS_RANGE: RangeInclusive<u64> = 1..=300_000;
 
 /// Loopback-only default so an unconfigured process is never exposed publicly.
 pub const DEFAULT_API_BIND: &str = "127.0.0.1:8088";
@@ -27,6 +39,14 @@ pub enum ConfigError {
 
     #[error("{var} is missing a host")]
     MissingDatabaseHost { var: &'static str },
+
+    #[error("{var} must be an integer between {min} and {max}, got {value:?}")]
+    OutOfRange {
+        var: &'static str,
+        value: String,
+        min: u64,
+        max: u64,
+    },
 }
 
 /// A validated PostgreSQL connection URL.
@@ -69,7 +89,7 @@ impl fmt::Debug for DatabaseUrl {
 
 /// Reads and validates `DATABASE_URL` when set.
 ///
-/// Optional in M0: validated so mistakes surface early, but no process
+/// Optional until M2: validated so mistakes surface early, but no process
 /// connects to PostgreSQL yet.
 pub fn database_url(
     lookup: &impl Fn(&str) -> Option<String>,
@@ -90,11 +110,95 @@ pub fn api_bind(lookup: &impl Fn(&str) -> Option<String>) -> Result<SocketAddr, 
         })
 }
 
+/// Reads an integer setting, applying `default` only when the variable is unset.
+///
+/// A value that is set but invalid or out of range is an error; it is never
+/// silently replaced by the default.
+fn bounded_integer(
+    lookup: &impl Fn(&str) -> Option<String>,
+    var: &'static str,
+    default: u64,
+    range: RangeInclusive<u64>,
+) -> Result<u64, ConfigError> {
+    let Some(raw) = lookup(var) else {
+        return Ok(default);
+    };
+    match raw.trim().parse::<u64>() {
+        Ok(value) if range.contains(&value) => Ok(value),
+        _ => Err(ConfigError::OutOfRange {
+            var,
+            value: raw,
+            min: *range.start(),
+            max: *range.end(),
+        }),
+    }
+}
+
+/// Limits of the bounded in-memory event pipeline.
+///
+/// At most `queue_capacity + worker_concurrency` events are held in memory at
+/// any time: `queue_capacity` waiting for a worker and `worker_concurrency`
+/// being processed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PipelineConfig {
+    pub queue_capacity: usize,
+    pub worker_concurrency: usize,
+    /// How long shutdown waits for admitted events to drain before abandoning them.
+    pub shutdown_timeout: Duration,
+}
+
+impl PipelineConfig {
+    pub fn from_lookup(lookup: &impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
+        // The ranges fit in usize on every supported (>= 32-bit) target.
+        let queue_capacity = bounded_integer(
+            lookup,
+            QUEUE_CAPACITY_VAR,
+            DEFAULT_QUEUE_CAPACITY as u64,
+            QUEUE_CAPACITY_RANGE,
+        )? as usize;
+        let worker_concurrency = bounded_integer(
+            lookup,
+            WORKER_CONCURRENCY_VAR,
+            DEFAULT_WORKER_CONCURRENCY as u64,
+            WORKER_CONCURRENCY_RANGE,
+        )? as usize;
+        let shutdown_timeout_ms = bounded_integer(
+            lookup,
+            SHUTDOWN_TIMEOUT_MS_VAR,
+            DEFAULT_SHUTDOWN_TIMEOUT_MS,
+            SHUTDOWN_TIMEOUT_MS_RANGE,
+        )?;
+        Ok(Self {
+            queue_capacity,
+            worker_concurrency,
+            shutdown_timeout: Duration::from_millis(shutdown_timeout_ms),
+        })
+    }
+
+    /// Upper bound on events held in memory by the pipeline.
+    pub fn max_occupancy(&self) -> usize {
+        self.queue_capacity + self.worker_concurrency
+    }
+}
+
+impl Default for PipelineConfig {
+    fn default() -> Self {
+        Self {
+            queue_capacity: DEFAULT_QUEUE_CAPACITY,
+            worker_concurrency: DEFAULT_WORKER_CONCURRENCY,
+            shutdown_timeout: Duration::from_millis(DEFAULT_SHUTDOWN_TIMEOUT_MS),
+        }
+    }
+}
+
 /// Configuration for the `pulsestream-api` process.
+///
+/// In M1 the API process also hosts the in-memory processing pipeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiConfig {
     pub bind: SocketAddr,
     pub database_url: Option<DatabaseUrl>,
+    pub pipeline: PipelineConfig,
 }
 
 impl ApiConfig {
@@ -106,6 +210,7 @@ impl ApiConfig {
         Ok(Self {
             bind: api_bind(&lookup)?,
             database_url: database_url(&lookup)?,
+            pipeline: PipelineConfig::from_lookup(&lookup)?,
         })
     }
 }
@@ -190,6 +295,74 @@ mod tests {
                 var: DATABASE_URL_VAR
             }
         );
+    }
+
+    #[test]
+    fn pipeline_defaults_are_conservative() {
+        let cfg = config(&[]).unwrap().pipeline;
+        assert_eq!(cfg, PipelineConfig::default());
+        assert_eq!(cfg.queue_capacity, 256);
+        assert_eq!(cfg.worker_concurrency, 4);
+        assert_eq!(cfg.shutdown_timeout, Duration::from_secs(10));
+        assert_eq!(cfg.max_occupancy(), 260);
+    }
+
+    #[test]
+    fn accepts_pipeline_limits_at_range_bounds() {
+        let cfg = config(&[
+            (QUEUE_CAPACITY_VAR, "65536"),
+            (WORKER_CONCURRENCY_VAR, "1"),
+            (SHUTDOWN_TIMEOUT_MS_VAR, " 300000 "),
+        ])
+        .unwrap()
+        .pipeline;
+        assert_eq!(cfg.queue_capacity, 65_536);
+        assert_eq!(cfg.worker_concurrency, 1);
+        assert_eq!(cfg.shutdown_timeout, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn rejects_invalid_queue_capacity() {
+        for bad in ["0", "65537", "18446744073709551615", "-1", "lots", ""] {
+            let err = config(&[(QUEUE_CAPACITY_VAR, bad)]).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    ConfigError::OutOfRange {
+                        var: QUEUE_CAPACITY_VAR,
+                        ..
+                    }
+                ),
+                "{bad:?} -> {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_worker_concurrency() {
+        for bad in ["0", "65", "4.5"] {
+            let err = config(&[(WORKER_CONCURRENCY_VAR, bad)]).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    ConfigError::OutOfRange {
+                        var: WORKER_CONCURRENCY_VAR,
+                        ..
+                    }
+                ),
+                "{bad:?} -> {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_shutdown_timeout() {
+        for bad in ["0", "300001"] {
+            assert!(
+                config(&[(SHUTDOWN_TIMEOUT_MS_VAR, bad)]).is_err(),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

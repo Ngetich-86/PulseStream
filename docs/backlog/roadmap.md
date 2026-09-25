@@ -3,23 +3,25 @@
 This is a **plan**, not a record of completed work. Actual contributions,
 reviews, and ownership are preserved in Git history and pull requests.
 
-| Milestone | Scope | Owner | Reviewer |
-| --- | --- | --- | --- |
-| **M0** | Foundation / architecture | Ngetich-86 | LMichy1 (requested) |
-| **M1** | Event ingestion + bounded concurrency | Ngetich-86 | LMichy1 |
-| **M2** | Persistence + idempotency + recovery | LMichy1 | MurayaSoftTouch |
-| **M3** | Retry / dead-letter / failure handling | MurayaSoftTouch | Ngetich-86 |
-| **M4** | Performance + backpressure + benchmarks | Ngetich-86 | LMichy1 |
-| **M5** | Operational / security / reliability hardening | MurayaSoftTouch | LMichy1 |
-| **M6** | Operations dashboard + end-to-end integration | LMichy1 | Ngetich-86 |
-| **M7** | Release readiness | Collaborative | Collaborative |
+| Milestone | Scope | Owner | Reviewer | Status |
+| --- | --- | --- | --- | --- |
+| **M0** | Foundation / architecture | Ngetich-86 | LMichy1 | Merged ([#1](https://github.com/Ngetich-86/PulseStream/pull/1)) |
+| **M1** | Event ingestion + bounded concurrency | Ngetich-86 | LMichy1 | Implemented, in review |
+| **M2** | Persistence + idempotency + recovery | LMichy1 | MurayaSoftTouch | Planned |
+| **M3** | Retry / dead-letter / failure handling | MurayaSoftTouch | Ngetich-86 | Planned |
+| **M4** | Performance + backpressure + benchmarks | Ngetich-86 | LMichy1 | Planned |
+| **M5** | Operational / security / reliability hardening | MurayaSoftTouch | LMichy1 | Planned |
+| **M6** | Operations dashboard + end-to-end integration | LMichy1 | Ngetich-86 | Planned |
+| **M7** | Release readiness | Collaborative | Collaborative | Planned |
 
 ## Milestone notes
 
 - **M0.** Rust workspace, API and worker skeletons, health endpoints, env
   config, structured logging, graceful shutdown, local PostgreSQL, CI, ADRs.
-- **M1.** Ingestion endpoint, validation, bounded admission with explicit
-  overload responses ([ADR-004](../adr/ADR-004-bounded-concurrency-backpressure.md)).
+- **M1.** `POST /v1/events`, validation, a bounded in-memory queue, bounded
+  processing concurrency, `429` on overload, and a bounded shutdown drain.
+  Acceptance is **non-durable**
+  ([ADR-006](../adr/ADR-006-in-memory-bounded-admission.md)).
 - **M2.** Event schema and migrations, the acceptance point, idempotency keys,
   work claiming, crash recovery, and **the delivery semantics document**
   ([ADR-005](../adr/ADR-005-delivery-semantics-deferred.md)).
